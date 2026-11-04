@@ -1,4 +1,4 @@
-import {delaySeconds, correctTWDI, parseCSV, validateSpectrum, combineSpectra, frequencyAnalysis, spectrumCSV} from './analysis.mjs?v=csv-headers-2';
+import {delaySeconds, correctTWDI, parseCSV, validateSpectrum, combineSpectra, frequencyAnalysis, spectrumCSV, spectrumOffsets, offsetSummaryCSV} from './analysis.mjs?v=offsets-lowfreq-1';
 const $ = id => document.getElementById(id);
 const colors = ['#169f91', '#4b79c1', '#d9a24e', '#9475be', '#d27787', '#4c9fab'];
 let datasets = [], nextId = 1, frequencyRows = null, frequencyResult = null;
@@ -27,8 +27,21 @@ function renderDatasets() {
   }
   $('export-spectrum').disabled = !datasets.length;
   $('spectrum-summary').textContent = `${datasets.length} スペクトル`;
+  renderOffsets();
   drawSpectrum();
 }
+const offsetStatus = {exact: '測定点', interpolated: '補間', masked: '除外', out_of_range: '範囲外'};
+function renderOffsets() {
+  const tbody = $('offsets-body'); tbody.replaceChildren();
+  $('export-offsets').disabled = !datasets.length;
+  if (!datasets.length) { const tr = document.createElement('tr'), td = textEl('td', 'データを読み込むと各オフセットの値を表示します', 'empty'); td.colSpan = 4; tr.append(td); tbody.append(tr); }
+  for (const d of datasets) {
+    const tr = document.createElement('tr'), name = textEl('td', d.name, 'offset-spectrum-name'); name.title = d.name; tr.append(name);
+    for (const p of spectrumOffsets(d.rows)) { const td = textEl('td', p.value === null ? '—' : p.value.toFixed(2)); td.append(textEl('small', offsetStatus[p.status])); td.title = p.lowerHz === null ? '測定範囲外' : `${p.lowerHz} – ${p.upperHz} Hz`; tr.append(td); }
+    tbody.append(tr);
+  }
+}
+$('export-offsets').onclick = () => download('phase-offset-summary.csv', offsetSummaryCSV(datasets));
 async function importSpectra(files) {
   for (const file of files) {
     try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); const rows = validateSpectrum(parseCSV(await file.text(), +$('spectrum-start-line').value)); addDataset(file.name, rows, {kind: 'measurement'}); showNotice(`${file.name}: ${rows.length} 点を読み込みました。`); } catch (e) { showNotice(`${file.name}: ${e.message}`, true); }
@@ -44,11 +57,11 @@ $('correction-form').onsubmit = e => { e.preventDefault(); run(() => {
   const source = selected('correction-source'), c = config();
   if (source.rows.some(r => r[1] === null)) throw new Error('欠損値を含む結果への再補正には対応していません。元の測定データを選択してください。');
   const result = correctTWDI(source.rows, c), excluded = result.filter(r => r[1] === null).length;
-  const metadata = {kind: 'twdi', model: 'provisional: H=4*(m1-m2)^2*sin(pi*f*tau)^2; tau=p*ng*L/c', config: c, source: source.name, note: $('mode-note').value, excluded};
+  const metadata = {kind: 'twdi', nullPolicy: 'mask DC and nonzero periodic nulls; retain positive low-frequency first lobe', model: 'provisional: H=4*(m1-m2)^2*sin(pi*f*tau)^2; tau=p*ng*L/c', config: c, source: source.name, note: $('mode-note').value, excluded};
   const ds = addDataset(`${source.name} · TWDI補正`, result, metadata); $('export-source').value = ds.id;
   records.unshift({id: crypto.randomUUID(), date: new Date().toISOString(), ...metadata});
   const saved = persistRecords(); renderRecords();
-  if (saved) showNotice(`暫定モデルで補正しました。${excluded} / ${result.length} 点をヌル付近として除外。モード条件を保存しました。`);
+  if (saved) showNotice(`暫定モデルで補正しました。${excluded} / ${result.length} 点を周期ヌル等として除外。低周波側も表示します（装置雑音も増幅）。モード条件を保存しました。`);
 }); };
 $('combine-form').onsubmit = e => { e.preventDefault(); run(() => { const a = selected('operand-a'), b = selected('operand-b'), operation = $('operation').value;
   const rows = combineSpectra(a.rows, b.rows, operation);
@@ -56,7 +69,7 @@ $('combine-form').onsubmit = e => { e.preventDefault(); run(() => { const a = se
   const d = addDataset(`${a.name} ${operation === 'add' ? '+' : '−'} ${b.name}`, rows, {kind: operation, a: a.name, b: b.name}); $('export-source').value = d.id;
   showNotice(`線形パワーで計算しました。${rows.filter(r => r[1] === null).length} 点は範囲外・欠損・非正値のため除外しました。`);
 }); };
-$('export-spectrum').onclick = () => run(() => { const d = selected('export-source'); download('phase-spectrum.csv', spectrumCSV(d.rows)); download('phase-spectrum-metadata.json', JSON.stringify({name: d.name, metadata: d.metadata, excludedValue: 'empty cell', exportedAt: new Date().toISOString()}, null, 2), 'application/json'); });
+$('export-spectrum').onclick = () => run(() => { const d = selected('export-source'); download('phase-spectrum.csv', spectrumCSV(d.rows)); download('phase-spectrum-metadata.json', JSON.stringify({name: d.name, metadata: d.metadata, offsetSummary: spectrumOffsets(d.rows), excludedValue: 'empty cell', exportedAt: new Date().toISOString()}, null, 2), 'application/json'); });
 function renderRecords() {
   const tbody = $('records-body'); tbody.replaceChildren();
   if (!records.length) { const tr = document.createElement('tr'); const td = textEl('td', '補正するとモードと測定条件が記録されます', 'empty'); td.colSpan = 5; tr.append(td); tbody.append(tr); }

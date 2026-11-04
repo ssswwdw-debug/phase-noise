@@ -11,8 +11,15 @@ export function correctTWDI(rows, {lengthM, index, passes = 1, modeA, modeB, flo
   if (!(floor > 0 && floor < 1)) throw new Error('ヌル除外閾値は 0 と 1 の間で指定してください。');
   const delay = delaySeconds(lengthM, index, passes);
   return rows.map(([f, db]) => {
-    const normalized = Math.sin(Math.PI * f * delay) ** 2;
-    return [f, normalized < floor ? null : db - 10 * Math.log10(transferPower(f, modeA - modeB, delay))];
+    const cycles = f * delay;
+    const sine = Math.abs(Math.sin(Math.PI * cycles));
+    // DC is singular, but positive frequencies in the first rising lobe are
+    // invertible. Apply the configurable mask only around nonzero delay nulls.
+    const nearest = Math.round(cycles);
+    const atNull = nearest >= 1 && Math.abs(cycles - nearest) <= 8 * Number.EPSILON * Math.max(1, cycles);
+    if (!(f > 0) || !Number.isFinite(db) || sine === 0 || atNull || (cycles >= 0.5 && sine ** 2 < floor)) return [f, null];
+    const correctionDB = 10 * Math.log10(4) + 20 * Math.log10(Math.abs(modeA - modeB)) + 20 * Math.log10(sine);
+    return [f, db - correctionDB];
   });
 }
 export function parseCSV(text, startLine = 1) {
@@ -81,3 +88,20 @@ export function frequencyAnalysis(rows, reference, fractional = false) {
   return {y, mean, std, biasHz: mean * reference, meanHz: reference * (1 + mean), duration: rows.at(-1)[0] - rows[0][0], dt, adev};
 }
 export function spectrumCSV(rows) { return 'offset_Hz,L_dBc_per_Hz\n' + rows.map(([f, db]) => `${f},${db === null ? '' : db}`).join('\n') + '\n'; }
+
+export function spectrumOffsets(rows, offsets = [1000, 10000, 100000]) {
+  return offsets.map(offsetHz => {
+    if (!rows.length || offsetHz < rows[0][0] || offsetHz > rows.at(-1)[0]) return {offsetHz, value: null, status: 'out_of_range', lowerHz: null, upperHz: null};
+    let lo = 0, hi = rows.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (rows[mid][0] > offsetHz) hi = mid; else lo = mid; }
+    const exact = rows[lo][0] === offsetHz ? lo : rows[hi][0] === offsetHz ? hi : -1;
+    const value = interpolate(rows, offsetHz);
+    return {offsetHz, value, status: value === null ? 'masked' : exact >= 0 ? 'exact' : 'interpolated', lowerHz: exact >= 0 ? offsetHz : rows[lo][0], upperHz: exact >= 0 ? offsetHz : rows[hi][0]};
+  });
+}
+export function offsetSummaryCSV(datasets) {
+  const quote = value => '"' + String(value).replaceAll('"', '""') + '"';
+  const lines = ['spectrum,offset_Hz,L_dBc_per_Hz,status,lower_Hz,upper_Hz'];
+  for (const d of datasets) for (const p of spectrumOffsets(d.rows)) lines.push([quote(d.name), p.offsetHz, p.value ?? '', p.status, p.lowerHz ?? '', p.upperHz ?? ''].join(','));
+  return lines.join('\n') + '\n';
+}
