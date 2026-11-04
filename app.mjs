@@ -1,4 +1,4 @@
-import {delaySeconds, correctTWDI, parseCSV, validateSpectrum, combineSpectra, frequencyAnalysis, spectrumCSV} from './analysis.mjs';
+import {delaySeconds, correctTWDI, parseCSV, validateSpectrum, combineSpectra, frequencyAnalysis, spectrumCSV} from './analysis.mjs?v=csv-headers-2';
 const $ = id => document.getElementById(id);
 const colors = ['#169f91', '#4b79c1', '#d9a24e', '#9475be', '#d27787', '#4c9fab'];
 let datasets = [], nextId = 1, frequencyRows = null, frequencyResult = null;

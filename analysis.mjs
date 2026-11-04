@@ -19,16 +19,15 @@ export function parseCSV(text, startLine = 1) {
   if (!Number.isSafeInteger(startLine) || startLine < 1) throw new Error('データ開始行は 1 以上の整数で指定してください。');
   const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).map((s, i) => ({text: s.trim(), line: i + 1})).slice(startLine - 1).filter(r => r.text && !r.text.startsWith('#'));
   const rows = [];
-  let headerAllowed = true;
+  let headerRows = 0;
   for (const {text: line, line: lineNumber} of lines) {
     const cells = line.split(/[,;\t ]+/).map(s => s.trim());
     if (cells.length !== 2 || cells.some(s => !s)) throw new Error(`${lineNumber} 行目: 2 列の数値が必要です。`);
     const nums = cells.map(Number);
     if (nums.some(n => !Number.isFinite(n))) {
-      if (headerAllowed && rows.length === 0 && cells.every(s => s && !Number.isFinite(Number(s)))) { headerAllowed = false; continue; }
+      if (headerRows < 2 && rows.length === 0 && cells.every(s => s && !Number.isFinite(Number(s)))) { headerRows++; continue; }
       throw new Error(`${lineNumber} 行目: 無効な数値です。`);
     }
-    headerAllowed = false;
     rows.push(nums);
   }
   if (rows.length < 2) throw new Error('少なくとも 2 点のデータが必要です。');
