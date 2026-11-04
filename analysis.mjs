@@ -105,3 +105,28 @@ export function offsetSummaryCSV(datasets) {
   for (const d of datasets) for (const p of spectrumOffsets(d.rows)) lines.push([quote(d.name), p.offsetHz, p.value ?? '', p.status, p.lowerHz ?? '', p.upperHz ?? ''].join(','));
   return lines.join('\n') + '\n';
 }
+
+// Supplementary Note 2C, Eq. (S8): the optical i-MZI floor contains
+// both in-loop and out-of-loop fiber contributions. It is not raw delay PSD.
+export function fiberEquivalent(rows, {inputKind = 'optical', repetitionHz, wavelengthNm, lengthM, index, passes = 1, floor = 1e-6, minFrequencyHz = 100} = {}) {
+  if (!['optical', 'rep'].includes(inputKind)) throw new Error('ファイバー雑音の入力形式を選択してください。');
+  if (!(Number.isFinite(minFrequencyHz) && minFrequencyHz >= 0)) throw new Error('適用下限は 0 以上の有限値で指定してください。');
+  let equivalent;
+  if (inputKind === 'optical') {
+    if (!(Number.isFinite(repetitionHz) && repetitionHz > 0 && Number.isFinite(wavelengthNm) && wavelengthNm > 0)) throw new Error('繰返し周波数と光波長は正数で指定してください。');
+    const carrierHz = C / (wavelengthNm * 1e-9);
+    const ratioDB = 20 * (Math.log10(repetitionHz) - Math.log10(carrierHz));
+    // |H_out|^2 = 4 sin^2(pi f tau_out); no mode-difference factor here.
+    const converted = rows.map(([f, db]) => [f, db === null ? null : db + ratioDB]);
+    equivalent = correctTWDI(converted, {lengthM, index, passes, floor, modeA: 0, modeB: 1});
+  } else equivalent = rows.map(([f, db]) => [f, db]);
+  return equivalent.map(([f, db]) => [f, f <= minFrequencyHz ? null : db]);
+}
+export function applyFiberNoise(targetRows, fiberRows, {operation = 'subtract', targetKind = 'rep', targetConfig, ...fiberConfig} = {}) {
+  if (!['add', 'subtract'].includes(operation) || !['rep', 'mixer'].includes(targetKind)) throw new Error('ファイバー雑音の処理・対象形式が不正です。');
+  const targetRep = targetKind === 'mixer' ? correctTWDI(targetRows, targetConfig || {}) : targetRows.map(([f, db]) => [f, db]);
+  const fiberRep = fiberEquivalent(fiberRows, fiberConfig);
+  const result = combineSpectra(targetRep, fiberRep, operation);
+  if (!result.some(r => r[1] !== null)) throw new Error('有効な結果がありません。重複周波数範囲、適用下限、差し引く雑音レベルを確認してください。');
+  return {targetRep, fiberRep, result};
+}

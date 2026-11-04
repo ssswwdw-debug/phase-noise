@@ -1,4 +1,4 @@
-import {delaySeconds, correctTWDI, parseCSV, validateSpectrum, combineSpectra, frequencyAnalysis, spectrumCSV, spectrumOffsets, offsetSummaryCSV} from './analysis.mjs?v=offsets-lowfreq-1';
+import {delaySeconds, correctTWDI, parseCSV, validateSpectrum, combineSpectra, frequencyAnalysis, spectrumCSV, spectrumOffsets, offsetSummaryCSV, applyFiberNoise} from './analysis.mjs?v=fiber-noise-1';
 const $ = id => document.getElementById(id);
 const colors = ['#169f91', '#4b79c1', '#d9a24e', '#9475be', '#d27787', '#4c9fab'];
 let datasets = [], nextId = 1, frequencyRows = null, frequencyResult = null;
@@ -12,7 +12,7 @@ function download(name, text, mime = 'text/csv;charset=utf-8') { const url = URL
 function selected(id) { const ds = datasets.find(d => d.id === $(id).value); if (!ds) throw new Error('スペクトルを読み込んでください。'); return ds; }
 function addDataset(name, rows, metadata = {}) { const ds = {id: String(nextId++), name, rows, metadata, color: colors[datasets.length % colors.length]}; datasets.push(ds); renderDatasets(); return ds; }
 function renderDatasets() {
-  for (const id of ['correction-source', 'operand-a', 'operand-b', 'export-source']) {
+  for (const id of ['correction-source', 'operand-a', 'operand-b', 'export-source', 'fiber-target', 'fiber-source']) {
     const select = $(id), value = select.value; select.replaceChildren();
     if (!datasets.length) select.append(new Option('データを読み込んでください', ''));
     for (const d of datasets) select.append(new Option(d.name, d.id));
@@ -43,7 +43,7 @@ function renderOffsets() {
 }
 $('export-offsets').onclick = () => download('phase-offset-summary.csv', offsetSummaryCSV(datasets));
 async function importSpectra(files) {
-  for (const file of files) {
+  for (const file of Array.from(files)) {
     try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); const rows = validateSpectrum(parseCSV(await file.text(), +$('spectrum-start-line').value)); addDataset(file.name, rows, {kind: 'measurement'}); showNotice(`${file.name}: ${rows.length} 点を読み込みました。`); } catch (e) { showNotice(`${file.name}: ${e.message}`, true); }
   }
 }
@@ -57,11 +57,11 @@ $('correction-form').onsubmit = e => { e.preventDefault(); run(() => {
   const source = selected('correction-source'), c = config();
   if (source.rows.some(r => r[1] === null)) throw new Error('欠損値を含む結果への再補正には対応していません。元の測定データを選択してください。');
   const result = correctTWDI(source.rows, c), excluded = result.filter(r => r[1] === null).length;
-  const metadata = {kind: 'twdi', nullPolicy: 'mask DC and nonzero periodic nulls; retain positive low-frequency first lobe', model: 'provisional: H=4*(m1-m2)^2*sin(pi*f*tau)^2; tau=p*ng*L/c', config: c, source: source.name, note: $('mode-note').value, excluded};
+  const metadata = {kind: 'twdi', nullPolicy: 'mask DC and nonzero periodic nulls; retain positive low-frequency first lobe', reference: '42005_2022_1100_MOESM1_ESM.pdf, Supplementary Note 2 Eq. S2', model: 'G=4*(m1-m2)^2*sin(pi*f*tau)^2; tau=p*ng*L/c', config: c, source: source.name, note: $('mode-note').value, excluded};
   const ds = addDataset(`${source.name} · TWDI補正`, result, metadata); $('export-source').value = ds.id;
   records.unshift({id: crypto.randomUUID(), date: new Date().toISOString(), ...metadata});
   const saved = persistRecords(); renderRecords();
-  if (saved) showNotice(`暫定モデルで補正しました。${excluded} / ${result.length} 点を周期ヌル等として除外。低周波側も表示します（装置雑音も増幅）。モード条件を保存しました。`);
+  if (saved) showNotice(`資料の式 (S2) に基づき補正しました。${excluded} / ${result.length} 点を周期ヌル等として除外。低周波側も表示します（装置雑音も増幅）。モード条件を保存しました。`);
 }); };
 $('combine-form').onsubmit = e => { e.preventDefault(); run(() => { const a = selected('operand-a'), b = selected('operand-b'), operation = $('operation').value;
   const rows = combineSpectra(a.rows, b.rows, operation);
@@ -76,13 +76,65 @@ function renderRecords() {
   for (const r of records) {
     const tr = document.createElement('tr'), c = r.config;
     const date = textEl('td', new Date(r.date).toLocaleString('ja-JP')); date.append(textEl('small', r.note || r.source || ''));
-    const modes = textEl('td', `${c.modeA} / ${c.modeB}`); modes.append(textEl('small', `Δm = ${Math.abs(c.modeA - c.modeB)} · 暫定モデル`));
+    const modes = textEl('td', `${c.modeA} / ${c.modeB}`); modes.append(textEl('small', `Δm = ${Math.abs(c.modeA - c.modeB)} · ${r.reference ? '資料 S2' : '旧暫定式'}`));
     const params = textEl('td', `${c.lengthM} m / ${c.index}`); params.append(textEl('small', `${c.passes === 2 ? '往復' : '片道'} · 閾値 ${c.floor}`));
     let delay = '—'; try { delay = `${(delaySeconds(c.lengthM, c.index, c.passes) * 1e6).toFixed(3)} µs`; } catch {}
     const action = document.createElement('td'), del = textEl('button', '×', 'delete-button'); del.setAttribute('aria-label', 'このモード記録を削除'); del.onclick = () => { records = records.filter(x => x.id !== r.id); persistRecords(); renderRecords(); }; action.append(del);
     tr.append(date, modes, params, textEl('td', delay), action); tbody.append(tr);
   }
 }
+let fiberRecords = [];
+try { const saved = JSON.parse(localStorage.getItem('phase-lab-fiber-records-v1') || '[]'); if (Array.isArray(saved)) fiberRecords = saved.filter(r => r && typeof r.id === 'string' && r.config); } catch { showNotice('ファイバー処理の保存記録を読み込めませんでした。', true); }
+function fiberConfig() {
+  return {operation: $('fiber-operation').value, targetKind: $('fiber-target-kind').value, targetConfig: $('fiber-target-kind').value === 'mixer' ? config() : undefined,
+    inputKind: $('fiber-input-kind').value, repetitionHz: +$('fiber-repetition').value, wavelengthNm: +$('fiber-wavelength').value,
+    lengthM: +$('fiber-out-length').value, index: +$('fiber-out-index').value, passes: +$('fiber-out-passes').value, floor: +$('fiber-out-floor').value, minFrequencyHz: +$('fiber-min-frequency').value};
+}
+function updateFiberForm() {
+  const optical = $('fiber-input-kind').value === 'optical'; $('fiber-optical-fields').hidden = !optical;
+  for (const input of $('fiber-optical-fields').querySelectorAll('input,select,button')) input.disabled = !optical;
+  const subtract = $('fiber-operation').value === 'subtract';
+  $('fiber-submit').textContent = subtract ? '換算してファイバー寄与を差し引く →' : '換算してファイバー寄与を加算・推定する →';
+  $('fiber-method-note').textContent = subtract ? 'out-of-loop 測定から両ファイバー寄与を除いた残差を計算します。光源そのものの全雑音とは異なります。in-loop の誤差信号から差し引く用途ではありません。' : 'in-loop 残差に両ファイバー寄与を加算して out-of-loop を見積もります（式 S5）。OSNR 等の装置雑音は含まない部分的な予測です。';
+  $('fiber-target-help').textContent = $('fiber-target-kind').value === 'mixer' ? '未補正の対象データは、TWDI 補正欄のモード次数差と遅延条件で先に除算します。加算なら in-loop、差引なら out-of-loop の条件を設定してください。光学雑音の換算に使う out-of-loop 遅延は下欄で別設定です。' : '対象は繰返し周波数換算済みの SSB 位相雑音 [dBc/Hz]。再度モード次数差で除算しません。';
+  try { $('fiber-out-delay').textContent = `${(delaySeconds(+$('fiber-out-length').value, +$('fiber-out-index').value, +$('fiber-out-passes').value) * 1e6).toFixed(3)} µs`; } catch { $('fiber-out-delay').textContent = '—'; }
+}
+for (const id of ['fiber-operation','fiber-target-kind','fiber-input-kind','fiber-out-length','fiber-out-index','fiber-out-passes']) $(id).addEventListener('input', updateFiberForm);
+$('copy-twdi-fiber').onclick = () => { for (const [to, from] of [['fiber-out-length','fiber-length'],['fiber-out-index','refractive-index'],['fiber-out-passes','passes'],['fiber-out-floor','null-floor']]) $(to).value = $(from).value; updateFiberForm(); };
+function saveFiberRecords() { try { localStorage.setItem('phase-lab-fiber-records-v1', JSON.stringify(fiberRecords)); return true; } catch { showNotice('ファイバー記録をブラウザに保存できません。JSON 出力で保管してください。', true); return false; } }
+function renderFiberRecords() {
+  const tbody = $('fiber-records-body'); tbody.replaceChildren();
+  if (!fiberRecords.length) { const tr = document.createElement('tr'), td = textEl('td','処理すると換算条件を記録します','empty'); td.colSpan=4; tr.append(td); tbody.append(tr); }
+  for (const r of fiberRecords) {
+    const tr = document.createElement('tr'), c = r.config;
+    const date = textEl('td', new Date(r.date).toLocaleString('ja-JP')); date.append(textEl('small', `${c.operation === 'subtract' ? '差し引き' : '加算・推定'} · ${r.note || ''}`));
+    const sources = textEl('td', r.target.name); sources.append(textEl('small', r.fiber.name));
+    const cond = textEl('td', c.inputKind === 'optical' ? `${c.repetitionHz} Hz / ${c.wavelengthNm} nm` : '繰返し周波数換算済み');
+    cond.append(textEl('small', `${c.inputKind === 'optical' ? `${c.lengthM} m / ng=${c.index} / p=${c.passes} · ` : ''}適用 > ${c.minFrequencyHz} Hz`));
+    const td = document.createElement('td'), del = textEl('button','×','delete-button'); del.setAttribute('aria-label','このファイバー処理記録を削除'); del.onclick = () => { fiberRecords = fiberRecords.filter(x => x.id !== r.id); saveFiberRecords(); renderFiberRecords(); }; td.append(del);
+    tr.append(date,sources,cond,td); tbody.append(tr);
+  }
+}
+$('fiber-form').onsubmit = e => { e.preventDefault(); run(() => {
+  const target = selected('fiber-target'), fiber = selected('fiber-source'), c = fiberConfig();
+  if (target.id === fiber.id) throw new Error('対象データと別測定のファイバー雑音をそれぞれ選択してください。');
+  if (c.inputKind === 'optical' && fiber.metadata.kind === 'fiber-floor') throw new Error('選択した雑音は繰返し周波数換算済みです。雑音の形式を「既に繰返し周波数へ換算済み」にしてください。');
+  if (c.targetKind === 'mixer' && (target.metadata.kind === 'twdi' || target.metadata.kind === 'fiber-corrected' || target.metadata.kind === 'fiber-prediction')) throw new Error('選択した対象は既に繰返し周波数換算済みです。対象の形式を「TWDI 補正済み」にしてください。');
+  const output = applyFiberNoise(target.rows, fiber.rows, c);
+  const meta = {reference: '42005_2022_1100_MOESM1_ESM.pdf, Supplementary Note 2C Eq. S8 and S5',
+    formula: 'B_rep=(f_rep/nu_CW)^2*L_iMZI_out/|H_out|^2; nu_CW=c/lambda; |H_out|^2=4*sin(pi*f*tau_out)^2 (linear power)',
+    config: c, target: {name: target.name, metadata: target.metadata}, fiber: {name: fiber.name, metadata: fiber.metadata}, note: $('fiber-note').value,
+    assumptions: 'Independent fiber contributions, same in/out i-MZI configuration as the optical reference; PZT effects neglected in selected band; no OSNR correction', excluded: output.result.filter(r => r[1] === null).length};
+  if (c.targetKind === 'mixer') addDataset(`${target.name} · 繰返し周波数換算`, output.targetRep, {kind:'twdi', config:c.targetConfig, reference:meta.reference, source:target.name});
+  addDataset(`${fiber.name} · ファイバー寄与（f_rep換算）`, output.fiberRep, {...meta,kind:'fiber-floor'});
+  const result = addDataset(`${target.name} · ${c.operation === 'subtract' ? 'ファイバー寄与除去後' : 'out-of-loop推定（OSNR未加算）'}`, output.result, {...meta,kind:c.operation === 'subtract' ? 'fiber-corrected' : 'fiber-prediction'});
+  $('export-source').value=result.id;
+  fiberRecords.unshift({id:crypto.randomUUID(),date:new Date().toISOString(),...meta}); const saved=saveFiberRecords(); renderFiberRecords();
+  if (saved) showNotice(`ファイバー寄与を${c.operation === 'subtract' ? '差し引きました' : '加算して out-of-loop を推定しました（OSNR 未加算）'}。${meta.excluded} / ${output.result.length} 点は適用帯域外・ヌル・重複範囲外・非正値のため除外。条件を保存しました。`);
+}); };
+$('export-fiber-records').onclick = () => download('fiber-noise-records.json',JSON.stringify(fiberRecords,null,2),'application/json');
+updateFiberForm(); renderFiberRecords();
+
 $('export-records').onclick = () => download('twdi-mode-records.json', JSON.stringify(records, null, 2), 'application/json');
 $('frequency-file').onchange = async e => { const file = e.target.files[0]; if (!file) return; try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); frequencyRows = parseCSV(await file.text(), +$('frequency-start-line').value); $('frequency-filename').textContent = file.name; clearFrequency(); analyzeFrequency(); } catch (error) { frequencyRows = null; clearFrequency(); showNotice(error.message, true); } e.target.value = ''; };
 function clearFrequency() { frequencyResult = null; for (const id of ['bias-hz', 'fractional-bias', 'frequency-std']) $(id).textContent = '—'; $('frequency-summary').textContent = '未解析'; $('adev-body').replaceChildren(); $('export-adev').disabled = true; drawAllan(); }
