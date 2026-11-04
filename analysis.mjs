@@ -15,17 +15,18 @@ export function correctTWDI(rows, {lengthM, index, passes = 1, modeA, modeB, flo
     return [f, normalized < floor ? null : db - 10 * Math.log10(transferPower(f, modeA - modeB, delay))];
   });
 }
-export function parseCSV(text) {
-  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#'));
+export function parseCSV(text, startLine = 1) {
+  if (!Number.isSafeInteger(startLine) || startLine < 1) throw new Error('データ開始行は 1 以上の整数で指定してください。');
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).map((s, i) => ({text: s.trim(), line: i + 1})).slice(startLine - 1).filter(r => r.text && !r.text.startsWith('#'));
   const rows = [];
   let headerAllowed = true;
-  for (const [i, line] of lines.entries()) {
+  for (const {text: line, line: lineNumber} of lines) {
     const cells = line.split(/[,;\t ]+/).map(s => s.trim());
-    if (cells.length !== 2 || cells.some(s => !s)) throw new Error(`${i + 1} 行目: 2 列の数値が必要です。`);
+    if (cells.length !== 2 || cells.some(s => !s)) throw new Error(`${lineNumber} 行目: 2 列の数値が必要です。`);
     const nums = cells.map(Number);
     if (nums.some(n => !Number.isFinite(n))) {
       if (headerAllowed && rows.length === 0 && cells.every(s => s && !Number.isFinite(Number(s)))) { headerAllowed = false; continue; }
-      throw new Error(`${i + 1} 行目: 無効な数値です。`);
+      throw new Error(`${lineNumber} 行目: 無効な数値です。`);
     }
     headerAllowed = false;
     rows.push(nums);

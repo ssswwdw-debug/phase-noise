@@ -31,7 +31,7 @@ function renderDatasets() {
 }
 async function importSpectra(files) {
   for (const file of files) {
-    try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); const rows = validateSpectrum(parseCSV(await file.text())); addDataset(file.name, rows, {kind: 'measurement'}); showNotice(`${file.name}: ${rows.length} 点を読み込みました。`); } catch (e) { showNotice(`${file.name}: ${e.message}`, true); }
+    try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); const rows = validateSpectrum(parseCSV(await file.text(), +$('spectrum-start-line').value)); addDataset(file.name, rows, {kind: 'measurement'}); showNotice(`${file.name}: ${rows.length} 点を読み込みました。`); } catch (e) { showNotice(`${file.name}: ${e.message}`, true); }
   }
 }
 $('spectrum-file').onchange = e => { importSpectra(e.target.files); e.target.value = ''; };
@@ -71,8 +71,9 @@ function renderRecords() {
   }
 }
 $('export-records').onclick = () => download('twdi-mode-records.json', JSON.stringify(records, null, 2), 'application/json');
-$('frequency-file').onchange = async e => { const file = e.target.files[0]; if (!file) return; try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); frequencyRows = parseCSV(await file.text()); $('frequency-filename').textContent = file.name; clearFrequency(); analyzeFrequency(); } catch (error) { frequencyRows = null; clearFrequency(); showNotice(error.message, true); } e.target.value = ''; };
+$('frequency-file').onchange = async e => { const file = e.target.files[0]; if (!file) return; try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); frequencyRows = parseCSV(await file.text(), +$('frequency-start-line').value); $('frequency-filename').textContent = file.name; clearFrequency(); analyzeFrequency(); } catch (error) { frequencyRows = null; clearFrequency(); showNotice(error.message, true); } e.target.value = ''; };
 function clearFrequency() { frequencyResult = null; for (const id of ['bias-hz', 'fractional-bias', 'frequency-std']) $(id).textContent = '—'; $('frequency-summary').textContent = '未解析'; $('adev-body').replaceChildren(); $('export-adev').disabled = true; drawAllan(); }
+$('frequency-start-line').addEventListener('input', () => { frequencyRows = null; $('frequency-filename').textContent = '開始行を変更しました。ファイルを再選択してください'; clearFrequency(); });
 for (const id of ['reference-frequency', 'frequency-kind']) $(id).addEventListener('input', clearFrequency);
 function analyzeFrequency() { run(() => { if (!frequencyRows) throw new Error('周波数時系列を読み込んでください。');
   const reference = +$('reference-frequency').value, fractional = $('frequency-kind').value === 'fractional';
