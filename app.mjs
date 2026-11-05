@@ -1,7 +1,7 @@
-import {delaySeconds, correctTWDI, parseCSV, validateSpectrum, combineSpectra, frequencyAnalysis, spectrumCSV, spectrumOffsets, offsetSummaryCSV, applyFiberNoise} from './analysis.mjs?v=fiber-noise-1';
+import {delaySeconds, correctTWDI, parseCSV, validateSpectrum, combineSpectra, frequencyAnalysis, spectrumCSV, spectrumOffsets, offsetSummaryCSV, applyFiberNoise} from './analysis.mjs?v=csv-columns-1';
 const $ = id => document.getElementById(id);
 const colors = ['#169f91', '#4b79c1', '#d9a24e', '#9475be', '#d27787', '#4c9fab'];
-let datasets = [], nextId = 1, frequencyRows = null, frequencyResult = null;
+let datasets = [], nextId = 1, frequencyRows = null, frequencyResult = null, frequencyText = null;
 let records = [];
 try { const stored = JSON.parse(localStorage.getItem('phase-lab-records-v1') || '[]'); if (Array.isArray(stored)) records = stored.filter(r => r && typeof r.id === 'string' && typeof r.date === 'string' && r.config); } catch { showNotice('保存済みモード記録を読み込めませんでした。新しい記録から開始します。', true); }
 function showNotice(message, error = false) { $('notice').hidden = false; $('notice').classList.toggle('error', error); $('notice').textContent = message; }
@@ -42,11 +42,16 @@ function renderOffsets() {
   }
 }
 $('export-offsets').onclick = () => download('phase-offset-summary.csv', offsetSummaryCSV(datasets));
+let lastSpectrumFiles = [];
+function columnOptions(prefix) { return {xColumn: +$(prefix+'-x-column').value, yColumn: +$(prefix+'-y-column').value}; }
 async function importSpectra(files) {
+  const startLine = +$('spectrum-start-line').value, columns = columnOptions('spectrum');
+  lastSpectrumFiles = Array.from(files); $('reload-spectrum').disabled = !lastSpectrumFiles.length;
   for (const file of Array.from(files)) {
-    try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); const rows = validateSpectrum(parseCSV(await file.text(), +$('spectrum-start-line').value)); addDataset(file.name, rows, {kind: 'measurement'}); showNotice(`${file.name}: ${rows.length} 点を読み込みました。`); } catch (e) { showNotice(`${file.name}: ${e.message}`, true); }
+    try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); const rows = validateSpectrum(parseCSV(await file.text(), startLine, columns)); addDataset(`${file.name} [X:${columns.xColumn}, Y:${columns.yColumn}]`, rows, {kind: 'measurement', import: {fileName:file.name, startLine, ...columns}}); showNotice(`${file.name}: ${rows.length} 点を読み込みました。`); } catch (e) { showNotice(`${file.name}: ${e.message}`, true); }
   }
 }
+$('reload-spectrum').onclick = () => importSpectra(lastSpectrumFiles);
 $('spectrum-file').onchange = e => { importSpectra(e.target.files); e.target.value = ''; };
 for (const event of ['dragover', 'dragleave', 'drop']) $('dropzone').addEventListener(event, e => { e.preventDefault(); $('dropzone').classList.toggle('dragover', event === 'dragover'); if (event === 'drop') importSpectra(e.dataTransfer.files); });
 function config() { return {lengthM: +$('fiber-length').value, index: +$('refractive-index').value, passes: +$('passes').value, modeA: +$('mode-a').value, modeB: +$('mode-b').value, floor: +$('null-floor').value}; }
@@ -136,20 +141,20 @@ $('export-fiber-records').onclick = () => download('fiber-noise-records.json',JS
 updateFiberForm(); renderFiberRecords();
 
 $('export-records').onclick = () => download('twdi-mode-records.json', JSON.stringify(records, null, 2), 'application/json');
-$('frequency-file').onchange = async e => { const file = e.target.files[0]; if (!file) return; try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); frequencyRows = parseCSV(await file.text(), +$('frequency-start-line').value); $('frequency-filename').textContent = file.name; clearFrequency(); analyzeFrequency(); } catch (error) { frequencyRows = null; clearFrequency(); showNotice(error.message, true); } e.target.value = ''; };
+$('frequency-file').onchange = async e => { const file = e.target.files[0]; if (!file) return; try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); frequencyText = await file.text(); frequencyRows = parseCSV(frequencyText, +$('frequency-start-line').value, columnOptions('frequency')); $('frequency-filename').textContent = file.name; clearFrequency(); analyzeFrequency(); } catch (error) { frequencyRows = null; clearFrequency(); showNotice(error.message, true); } e.target.value = ''; };
 function clearFrequency() { frequencyResult = null; for (const id of ['bias-hz', 'fractional-bias', 'frequency-std']) $(id).textContent = '—'; $('frequency-summary').textContent = '未解析'; $('adev-body').replaceChildren(); $('export-adev').disabled = true; drawAllan(); }
-$('frequency-start-line').addEventListener('input', () => { frequencyRows = null; $('frequency-filename').textContent = '開始行を変更しました。ファイルを再選択してください'; clearFrequency(); });
+for (const id of ['frequency-start-line','frequency-x-column','frequency-y-column']) $(id).addEventListener('input', () => { frequencyRows = null; clearFrequency(); });
 for (const id of ['reference-frequency', 'frequency-kind']) $(id).addEventListener('input', clearFrequency);
-function analyzeFrequency() { run(() => { if (!frequencyRows) throw new Error('周波数時系列を読み込んでください。');
+function analyzeFrequency() { run(() => { if (frequencyText !== null) frequencyRows = parseCSV(frequencyText, +$('frequency-start-line').value, columnOptions('frequency')); if (!frequencyRows) throw new Error('周波数時系列を読み込んでください。');
   const reference = +$('reference-frequency').value, fractional = $('frequency-kind').value === 'fractional';
-  frequencyResult = {...frequencyAnalysis(frequencyRows, reference, fractional), reference, fractional};
+  frequencyResult = {...frequencyAnalysis(frequencyRows, reference, fractional), reference, fractional, import: {startLine: +$('frequency-start-line').value,...columnOptions('frequency')}};
   $('bias-hz').textContent = fmt(frequencyResult.biasHz); $('fractional-bias').textContent = fmt(frequencyResult.mean); $('frequency-std').textContent = fmt(frequencyResult.std);
   $('frequency-summary').textContent = `${frequencyRows.length} 点 · Δt = ${frequencyResult.dt.toPrecision(4)} s · ${frequencyResult.duration.toPrecision(4)} s`;
   $('adev-body').replaceChildren(); for (const a of frequencyResult.adev) { const tr = document.createElement('tr'); tr.append(textEl('td', a.tau.toPrecision(5)), textEl('td', fmt(a.value, 5)), textEl('td', a.pairs)); $('adev-body').append(tr); }
   $('export-adev').disabled = false; drawAllan(); showNotice('周波数時系列を解析しました。平均偏差は基準値との差であり、校正された確度・測定不確かさを示すものではありません。');
 }); }
 $('frequency-form').onsubmit = e => { e.preventDefault(); analyzeFrequency(); };
-$('export-adev').onclick = () => { if (frequencyResult) download('overlapping-allan-deviation.csv', `# reference_Hz=${frequencyResult.reference}\n# input=${frequencyResult.fractional ? 'fractional' : 'Hz'}\n# relative_mean=${frequencyResult.mean}\n# bias_Hz=${frequencyResult.biasHz}\n# relative_sample_std=${frequencyResult.std}\ntau_s,allan_deviation,pairs\n` + frequencyResult.adev.map(a => `${a.tau},${a.value},${a.pairs}`).join('\n') + '\n'); };
+$('export-adev').onclick = () => { if (frequencyResult) download('overlapping-allan-deviation.csv', `# reference_Hz=${frequencyResult.reference}\n# x_column=${frequencyResult.import.xColumn}\n# y_column=${frequencyResult.import.yColumn}\n# start_line=${frequencyResult.import.startLine}\n# input=${frequencyResult.fractional ? 'fractional' : 'Hz'}\n# relative_mean=${frequencyResult.mean}\n# bias_Hz=${frequencyResult.biasHz}\n# relative_sample_std=${frequencyResult.std}\ntau_s,allan_deviation,pairs\n` + frequencyResult.adev.map(a => `${a.tau},${a.value},${a.pairs}`).join('\n') + '\n'); };
 for (const button of document.querySelectorAll('[data-tab]')) button.onclick = () => {
   const phase = button.dataset.tab === 'phase'; $('phase-panel').hidden = !phase; $('frequency-panel').hidden = phase;
   for (const b of document.querySelectorAll('[data-tab]')) { const active = b === button; b.classList.toggle('active', active); b.setAttribute('aria-selected', String(active)); }
@@ -166,7 +171,7 @@ function demo() {
     $('operand-b').value = datasets.at(-1).id; showNotice('合成サンプルを読み込みました。実測データではありません。');
   } else {
     let state = 42; const rand = () => { state = (1664525 * state + 1013904223) >>> 0; return (state + .5) / 4294967296; };
-    frequencyRows = Array.from({length: 4096}, (_, i) => [i, 1e7 + .025 + .1 * Math.sqrt(-2 * Math.log(rand())) * Math.cos(2 * Math.PI * rand())]);
+    frequencyText = null; frequencyRows = Array.from({length: 4096}, (_, i) => [i, 1e7 + .025 + .1 * Math.sqrt(-2 * Math.log(rand())) * Math.cos(2 * Math.PI * rand())]);
     $('reference-frequency').value = 1e7; $('frequency-kind').value = 'hz'; $('frequency-filename').textContent = '合成サンプル · 4096 点 / 1 s'; analyzeFrequency(); showNotice('合成の周波数時系列を解析しました。実測データではありません。');
   }
 }

@@ -22,18 +22,39 @@ export function correctTWDI(rows, {lengthM, index, passes = 1, modeA, modeB, flo
     return [f, db - correctionDB];
   });
 }
-export function parseCSV(text, startLine = 1) {
+function csvCells(line) {
+  let quoted = false, delimiters = new Set();
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '"') { if (quoted && line[i + 1] === '"') { i++; continue; } quoted = !quoted; }
+    else if (!quoted && [',', ';', '\t'].includes(line[i])) delimiters.add(line[i]);
+  }
+  if (quoted) throw new Error('引用符が閉じていません（改行を含むセルは非対応です）。');
+  const delimiter = delimiters.has(',') ? ',' : delimiters.has('\t') ? '\t' : delimiters.has(';') ? ';' : null;
+  if (!delimiter) return line.trim().split(/\s+/);
+  const cells = []; let cell = ''; quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { if (quoted && line[i + 1] === '"') { cell += '"'; i++; } else quoted = !quoted; }
+    else if (!quoted && c === delimiter) { cells.push(cell.trim()); cell = ''; }
+    else cell += c;
+  }
+  cells.push(cell.trim()); return cells;
+}
+export function parseCSV(text, startLine = 1, {xColumn = 1, yColumn = 2} = {}) {
   if (!Number.isSafeInteger(startLine) || startLine < 1) throw new Error('データ開始行は 1 以上の整数で指定してください。');
+  if (![xColumn,yColumn].every(n => Number.isSafeInteger(n) && n >= 1) || xColumn === yColumn) throw new Error('X 列と Y 列は異なる 1 以上の整数で指定してください。');
   const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).map((s, i) => ({text: s.trim(), line: i + 1})).slice(startLine - 1).filter(r => r.text && !r.text.startsWith('#'));
-  const rows = [];
-  let headerRows = 0;
+  const rows = []; let headerRows = 0;
   for (const {text: line, line: lineNumber} of lines) {
-    const cells = line.split(/[,;\t ]+/).map(s => s.trim());
-    if (cells.length !== 2 || cells.some(s => !s)) throw new Error(`${lineNumber} 行目: 2 列の数値が必要です。`);
-    const nums = cells.map(Number);
+    let cells;
+    try { cells = csvCells(line); } catch(e) { throw new Error(`${lineNumber} 行目: ${e.message}`); }
+    if (cells.length < Math.max(xColumn,yColumn)) throw new Error(`${lineNumber} 行目: 指定した X=${xColumn} 列、Y=${yColumn} 列がありません（${cells.length} 列）。`);
+    const chosen = [cells[xColumn - 1], cells[yColumn - 1]];
+    if (chosen.some(s => !s)) throw new Error(`${lineNumber} 行目: 指定した X / Y 列に空のセルがあります。`);
+    const nums = chosen.map(Number);
     if (nums.some(n => !Number.isFinite(n))) {
-      if (headerRows < 2 && rows.length === 0 && cells.every(s => s && !Number.isFinite(Number(s)))) { headerRows++; continue; }
-      throw new Error(`${lineNumber} 行目: 無効な数値です。`);
+      if (headerRows < 2 && rows.length === 0 && chosen.every(s => !Number.isFinite(Number(s)))) { headerRows++; continue; }
+      throw new Error(`${lineNumber} 行目: 指定した X / Y 列に無効な数値があります。`);
     }
     rows.push(nums);
   }
