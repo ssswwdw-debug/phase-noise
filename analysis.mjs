@@ -151,3 +151,14 @@ export function applyFiberNoise(targetRows, fiberRows, {operation = 'subtract', 
   if (!result.some(r => r[1] !== null)) throw new Error('有効な結果がありません。重複周波数範囲、適用下限、差し引く雑音レベルを確認してください。');
   return {targetRep, fiberRep, result};
 }
+
+export function previewCSV(text, limit = 40) {
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
+  if (lines.at(-1) === '') lines.pop();
+  const rows = lines.slice(0, limit).map((raw, i) => {
+    const comment = raw.trim().startsWith('#'), blank = !raw.trim();
+    try { return {line: i + 1, cells: blank ? [] : csvCells(raw), comment, blank, error: null}; }
+    catch(e) { return {line: i + 1, cells: [raw], comment, blank, error: e.message}; }
+  });
+  return {rows, totalLines: lines.length, columnCount: Math.max(0, ...rows.map(r => r.cells.length)), truncated: lines.length > limit};
+}

@@ -1,4 +1,5 @@
-import {delaySeconds, correctTWDI, parseCSV, validateSpectrum, combineSpectra, frequencyAnalysis, spectrumCSV, spectrumOffsets, offsetSummaryCSV, applyFiberNoise} from './analysis.mjs?v=csv-columns-1';
+import {chooseCSVImport} from './import-preview.mjs?v=csv-preview-1';
+import {delaySeconds, correctTWDI, parseCSV, validateSpectrum, combineSpectra, frequencyAnalysis, spectrumCSV, spectrumOffsets, offsetSummaryCSV, applyFiberNoise} from './analysis.mjs?v=csv-preview-1';
 const $ = id => document.getElementById(id);
 const colors = ['#169f91', '#4b79c1', '#d9a24e', '#9475be', '#d27787', '#4c9fab'];
 let datasets = [], nextId = 1, frequencyRows = null, frequencyResult = null, frequencyText = null;
@@ -45,10 +46,16 @@ $('export-offsets').onclick = () => download('phase-offset-summary.csv', offsetS
 let lastSpectrumFiles = [];
 function columnOptions(prefix) { return {xColumn: +$(prefix+'-x-column').value, yColumn: +$(prefix+'-y-column').value}; }
 async function importSpectra(files) {
-  const startLine = +$('spectrum-start-line').value, columns = columnOptions('spectrum');
   lastSpectrumFiles = Array.from(files); $('reload-spectrum').disabled = !lastSpectrumFiles.length;
-  for (const file of Array.from(files)) {
-    try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); const rows = validateSpectrum(parseCSV(await file.text(), startLine, columns)); addDataset(`${file.name} [X:${columns.xColumn}, Y:${columns.yColumn}]`, rows, {kind: 'measurement', import: {fileName:file.name, startLine, ...columns}}); showNotice(`${file.name}: ${rows.length} 点を読み込みました。`); } catch (e) { showNotice(`${file.name}: ${e.message}`, true); }
+  for (const file of lastSpectrumFiles) {
+    try {
+      const choice = await chooseCSVImport(file, {startLine: +$('spectrum-start-line').value, ...columnOptions('spectrum'), kind:'spectrum', validate:validateSpectrum});
+      if (!choice) break;
+      const {rows,startLine,xColumn,yColumn}=choice;
+      $('spectrum-start-line').value=startLine; $('spectrum-x-column').value=xColumn; $('spectrum-y-column').value=yColumn;
+      addDataset(`${file.name} [X:${xColumn}, Y:${yColumn}]`,rows,{kind:'measurement',import:{fileName:file.name,startLine,xColumn,yColumn}});
+      showNotice(`${file.name}: ${rows.length} 点を読み込みました（先頭 ${startLine-1} 行スキップ、X=${xColumn} 列、Y=${yColumn} 列）。`);
+    } catch(e) { showNotice(`${file.name}: ${e.message}`,true); }
   }
 }
 $('reload-spectrum').onclick = () => importSpectra(lastSpectrumFiles);
@@ -141,7 +148,15 @@ $('export-fiber-records').onclick = () => download('fiber-noise-records.json',JS
 updateFiberForm(); renderFiberRecords();
 
 $('export-records').onclick = () => download('twdi-mode-records.json', JSON.stringify(records, null, 2), 'application/json');
-$('frequency-file').onchange = async e => { const file = e.target.files[0]; if (!file) return; try { if (file.size > 20 * 1024 * 1024) throw new Error('20 MB 以下のファイルを指定してください。'); frequencyText = await file.text(); frequencyRows = parseCSV(frequencyText, +$('frequency-start-line').value, columnOptions('frequency')); $('frequency-filename').textContent = file.name; clearFrequency(); analyzeFrequency(); } catch (error) { frequencyRows = null; clearFrequency(); showNotice(error.message, true); } e.target.value = ''; };
+$('frequency-file').onchange=async e=>{
+  const file=e.target.files[0]; e.target.value=''; if(!file)return;
+  try {
+    const choice=await chooseCSVImport(file,{startLine:+$('frequency-start-line').value,...columnOptions('frequency'),kind:'frequency',validate:rows=>frequencyAnalysis(rows,+$('reference-frequency').value,$('frequency-kind').value==='fractional')});
+    if(!choice)return;
+    frequencyText=choice.text; frequencyRows=choice.rows; $('frequency-start-line').value=choice.startLine; $('frequency-x-column').value=choice.xColumn; $('frequency-y-column').value=choice.yColumn;
+    $('frequency-filename').textContent=file.name; clearFrequency(); analyzeFrequency();
+  }catch(error){showNotice(error.message,true);}
+};
 function clearFrequency() { frequencyResult = null; for (const id of ['bias-hz', 'fractional-bias', 'frequency-std']) $(id).textContent = '—'; $('frequency-summary').textContent = '未解析'; $('adev-body').replaceChildren(); $('export-adev').disabled = true; drawAllan(); }
 for (const id of ['frequency-start-line','frequency-x-column','frequency-y-column']) $(id).addEventListener('input', () => { frequencyRows = null; clearFrequency(); });
 for (const id of ['reference-frequency', 'frequency-kind']) $(id).addEventListener('input', clearFrequency);
